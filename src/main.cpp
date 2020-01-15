@@ -1,5 +1,6 @@
 // #define BLYNK_DEBUG // Optional, this enables lots of prints
 #define BLYNK_PRINT Serial
+#define BLYNK_NO_FANCY_LOGO
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -14,21 +15,17 @@
 #include "sensor-utils.h"
 #include "secrets.h"
 
-#define FIRMWARE_NAME "Environment Sensor"
-#define FIRMWARE_VERSION "0.2"
-#define FIRMWARE_SLUG "display-ESP32_DEVKITC-arduino"
+#include "KWConfig.h"
 
-/*************************** Configuration Settings *******************************************************
+/*************************** Device-specific Configuration Settings *******************************************************
  *  Configuration settings stored in permanent FLASH memory                            
  */
 #define WRITE_SETTINGS false
 
-#define CFG_DEVICE_TYPE "ESP32_DEVKITC"
 #define CFG_CLIENT_ID 30 // 3X = display nodes
 #define CFG_NUM_LEDS 2   // Number of active LEDs in display
 
 Preferences preferences;
-String cfg_device_type;
 int cfg_client_id;
 int cfg_num_leds;
 /**********************************************************************************************************/
@@ -52,7 +49,7 @@ CRGB data_colour = CRGB::White;
 CRGB wifi_colour = CRGB::Blue;
 CRGB error_colour = CRGB::Red;
 
-char device_id[20];
+char chip_id[20];
 
 int colour_index = 0;
 int co2 = 0;
@@ -67,74 +64,67 @@ typedef struct
   int max;
 } display_range_t;
 
-display_range_t co2_display_range = (display_range_t){.min = 450, .max = 1200};
+display_range_t co2_display_range = (display_range_t){.min = KW_DEFAULT_CO2_MIN, .max = KW_DEFAULT_CO2_MAX};
 
 BlynkTimer reconnect_mqtt_timer;
 BlynkTimer breather_timer;
 
+void logo(char *title, char *version, char *type);
+void generate_chip_id();
 void reconnect_mqtt();
-void colourChange();
 void make_topic(char *buf, int client_id, char *topic);
+void colourChange();
 
 void setup()
 {
   Serial.begin(115200);
   delay(2000);
+  displayLED.off(1);
 
   //preferences **************************************************************************
   preferences.begin("display", false);
 
   if (WRITE_SETTINGS)
   {
-    preferences.putString("device_type", CFG_DEVICE_TYPE);
     preferences.putInt("client_id", CFG_CLIENT_ID);
     preferences.putBool("num_leds", CFG_NUM_LEDS);
 
-    cfg_device_type = CFG_DEVICE_TYPE;
     cfg_client_id = CFG_CLIENT_ID;
     cfg_num_leds = CFG_NUM_LEDS;
   }
   else
   {
-    cfg_device_type = preferences.getString("device_type", CFG_DEVICE_TYPE);
     cfg_client_id = preferences.getInt("client_id", -1);
     cfg_num_leds = preferences.getBool("num_leds", false);
   }
-
   // preferences ************************************************************************
 
-  displayLED.off(1);
+  logo(FIRMWARE_NAME, FIRMWARE_VERSION, DEVICE_TYPE);
 
-  make_topic(info_topic, cfg_client_id, "info/status");
-  make_topic(co2_topic, cfg_client_id, "data/co2");
-  make_topic(temp_topic, cfg_client_id, "temp/co2");
-  make_topic(humidity_topic, cfg_client_id, "humidity/co2");
-  make_topic(light_topic, cfg_client_id, "light/co2");
-  make_topic(power_topic, cfg_client_id, "power/co2");
+  generate_chip_id();
+  BLYNK_LOG("Chip ID: %s", chip_id);
 
-  sprintf(device_id, "%s-%02d", cfg_device_type.c_str(), cfg_client_id);
-  utils::printBanner(FIRMWARE_NAME, FIRMWARE_SLUG, FIRMWARE_VERSION, device_id);
-
-  // setup_wifi();
+  // setup MQTT
   mqttClient.setServer(mqtt_server, 1883);
   mqttClient.setCallback(mqtt_callback);
-
+  make_topic(info_topic, cfg_client_id, "info/status");
+  make_topic(co2_topic, cfg_client_id, "data/co2");
+  make_topic(temp_topic, cfg_client_id, "data/temp");
+  make_topic(humidity_topic, cfg_client_id, "data/humidity");
+  make_topic(light_topic, cfg_client_id, "data/light");
+  make_topic(power_topic, cfg_client_id, "data/power");
   reconnect_mqtt_timer.setInterval(1000L, reconnect_mqtt);
-  breather_timer.setInterval(10L, colourChange);
+
+  breather_timer.setInterval(1L, colourChange);
   Blynk.begin(BLYNK_AUTH, SSID, PASSWD);
 }
 
 void loop()
 {
-  mqttClient.loop();
   Blynk.run();
+  mqttClient.loop();
   reconnect_mqtt_timer.run();
   breather_timer.run();
-}
-
-void make_topic(char *buf, int client_id, char *topic)
-{
-  sprintf(buf, "%d/%s", client_id, topic);
 }
 
 void colourChange()
@@ -142,43 +132,68 @@ void colourChange()
   // displayLED.colour(0, co2_ppm, 400, 1200);
   displayLED.colour(1, co2, co2_display_range.min, co2_display_range.max);
 }
+
+void generate_chip_id()
+{
+  uint64_t chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
+  uint16_t chip = (uint16_t)(chipid >> 32);
+  sprintf(chip_id, "ESP32-%04X-%08X", chip, (uint32_t)chipid);
+}
+
+void logo(char *title, char *version, char *type)
+{
+  char strap_line[200];
+  sprintf(strap_line, "                  |___/  %s v%s on %s", title, version, type);
+
+  Serial.println("  _  __ _                                                _ ");
+  Serial.println(" | |/ /(_) _ __    __ _  ___ __      __ ___    ___    __| |");
+  Serial.println(" | ' / | || '_ \\  / _` |/ __|\\ \\ /\\ / // _ \\  / _ \\  / _` |");
+  Serial.println(" | . \\ | || | | || (_| |\\__ \\ \\ V  V /| (_) || (_) || (_| |");
+  Serial.println(" |_|\\_\\|_||_| |_| \\__, ||___/  \\_/\\_/  \\___/  \\___/  \\__,_|");
+  Serial.println(strap_line);
+  Serial.println();
+}
+
 /************** WiFi / MQTT  *******************************************************************/
 
 void reconnect_mqtt()
 {
-  // Loop until we're reconnected
-  while (!mqttClient.connected())
+  if (!mqttClient.connected())
   {
     // statusLED.flash(error_colour, 50);
 
-    Serial.print("Attempting MQTT connection...");
+    BLYNK_LOG("Attempting MQTT connection...");
     // Attempt to connect
-    if (mqttClient.connect(device_id))
+    if (mqttClient.connect(chip_id))
     {
-      Serial.println("connected");
+      BLYNK_LOG("MQTT connected");
 
       // Once connected, publish an announcement...
-      Serial.print("DEBUG:cfg_client_id=");
-      Serial.println(cfg_client_id);
-
       mqttClient.publish(info_topic, "ONLINE");
+      BLYNK_LOG("MQTT Published ONLINE to [%s]", info_topic);
 
       // ... and resubscribe
       mqttClient.subscribe(co2_topic);
+      BLYNK_LOG("MQTT subscribed to [%s]", co2_topic);
       mqttClient.subscribe(temp_topic);
+      BLYNK_LOG("MQTT subscribed to [%s]", temp_topic);
       mqttClient.subscribe(humidity_topic);
+      BLYNK_LOG("MQTT subscribed to [%s]", humidity_topic);
       mqttClient.subscribe(light_topic);
+      BLYNK_LOG("MQTT subscribed to [%s]", light_topic);
       mqttClient.subscribe(power_topic);
+      BLYNK_LOG("MQTT subscribed to [%s]", power_topic);
     }
     else
     {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
+      BLYNK_LOG("MQTT reconnect failed, rc=%d", mqttClient.state());
     }
   }
+}
+
+void make_topic(char *buf, int client_id, char *topic)
+{
+  sprintf(buf, "%d/%s", client_id, topic);
 }
 
 int intFromPayload(byte *payload, unsigned int length)
@@ -219,17 +234,14 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
   else if (strcmp(power_topic, topic) == 0)
     power = intFromPayload(payload, length);
 
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
+  char buf[length + 1];
   for (int i = 0; i < length; i++)
   {
-    Serial.print((char)payload[i]);
+    buf[i] = (char)payload[i];
   }
-  Serial.println();
+  buf[length + 1] = '\0';
+  BLYNK_LOG("MQTT Message arrived [%s] %s", topic, buf);
 }
-
-/***********************************************************************************************/
 
 /************************************************************************************************
  * Blynk callbacks
@@ -238,6 +250,5 @@ void mqtt_callback(char *topic, byte *payload, unsigned int length)
 BLYNK_WRITE(V1)
 {
   co2_display_range.max = param.asInt();
-  Serial.print("DEBUG: New CO2 max=");
-  Serial.println(co2_display_range.max);
+  BLYNK_LOG("New CO2 max=%d", co2_display_range.max);
 }
