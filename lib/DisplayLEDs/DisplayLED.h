@@ -12,7 +12,7 @@ public:
     void on(int idx, CRGB colour);
     void off(int idx);
     void flash(int idx, CRGB colour, int duration_millis);
-    void colour(int idx, float value, float min, float max);
+    void colour(float val, float min, float max, float brightness);
 };
 
 DisplayLED::DisplayLED()
@@ -41,12 +41,12 @@ void DisplayLED::flash(int idx, CRGB colour, int duration_millis)
 }
 
 // 'breathing' function https://sean.voisen.org/blog/2011/10/breathing-led-with-arduino/
-float breathe()
+float breathe(float brightness)
 {
-    return (exp(sin(millis() / 2000.0 * PI)) - 0.36787944) * 108.0;
+    return (exp(sin(millis() / 2000.0 * PI)) - 0.36787944) * 108.0 * brightness;
 }
 
-void DisplayLED::colour(int idx, float val, float min, float max)
+void DisplayLED::colour(float val, float min, float max, float brightness)
 {
     const int hue_max = 160; // blue in the FastLED 'rainbow' colour map
     CHSV pixelColour;
@@ -55,8 +55,8 @@ void DisplayLED::colour(int idx, float val, float min, float max)
 
     pixelColour.sat = 255;
     pixelColour.hue = map(val, min, max, hue_max, 0);
-    pixelColour.val = map(breathe(), 0, 255, 35, 255);
+    pixelColour.val = map(breathe(brightness), 0, 255, 30, 255);
 
-    leds[idx] = pixelColour;
+    fill_solid(leds, NUM_LEDS, pixelColour);
     FastLED.show();
 }
